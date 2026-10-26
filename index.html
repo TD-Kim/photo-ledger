@@ -65,6 +65,8 @@ button:disabled { opacity: .5; cursor: default; }
   .ops { grid-column: 1 / -1; justify-content: flex-end; }
 }
 .touch .desk-only { display: none; }
+label.check { display: flex; gap: 8px; align-items: flex-start; color: var(--fg); }
+label.check input { width: 20px; height: 20px; margin: 2px 0 0; flex: none; accent-color: var(--accent); }
 </style>
 <div class="wrap">
   <aside class="side">
@@ -75,11 +77,12 @@ button:disabled { opacity: .5; cursor: default; }
     <div class="panel" style="display:grid;gap:12px">
       <label>공사명<input type="text" id="project" value="" placeholder="예: ○○~○○ 복선전철 ○공구 노반신설 기타공사"></label>
       <label>위치 (기본값)<input type="text" id="location" value="현장 내"></label>
-      <label>작업내용 (기본값)<input type="text" id="work" value="안전시설물 설치 해체 인건비"></label>
+      <label>사진내용 (기본값)<input type="text" id="work" value="안전시설물 설치 해체 인건비"></label>
       <div class="row2">
         <label>번호 앞부분<input type="text" id="prefix" value="2-"></label>
         <label>시작 번호<input type="number" id="start" value="1" min="1"></label>
       </div>
+      <label class="check"><input type="checkbox" id="fill" checked> 사진을 모두 같은 크기로 맞추기 (칸보다 넘치는 가장자리는 잘림)</label>
     </div>
     <button class="primary" id="make" disabled>엑셀 만들기</button>
     <div class="status" id="status">사진을 넣어 주세요.</div>
@@ -195,7 +198,7 @@ function render() {
       <div class="fields">
         <input type="date" aria-label="일자" data-k="date">
         <input type="text" aria-label="위치" data-k="location">
-        <input type="text" aria-label="작업내용" data-k="work">
+        <input type="text" aria-label="사진내용" data-k="work">
         <div class="fname"></div>
       </div>
       <div class="ops">
@@ -235,15 +238,21 @@ function setStatus(msg, warn = false) {
 
 // ---- 사진 축소 (원본 그대로 넣으면 파일이 GB 단위로 커짐) ----
 const MAX_SIDE = 1400;
-async function shrink(file) {
+// ratio(가로/세로)를 주면 가운데를 기준으로 그 비율로 잘라낸다
+async function shrink(file, ratio) {
   const bmp = await createImageBitmap(file, { imageOrientation: 'from-image' });
-  const scale = Math.min(1, MAX_SIDE / Math.max(bmp.width, bmp.height));
-  const w = Math.round(bmp.width * scale), h = Math.round(bmp.height * scale);
+  let sx = 0, sy = 0, sw = bmp.width, sh = bmp.height;
+  if (ratio) {
+    if (sw / sh > ratio) { sw = Math.round(sh * ratio); sx = Math.round((bmp.width - sw) / 2); }
+    else { sh = Math.round(sw / ratio); sy = Math.round((bmp.height - sh) / 2); }
+  }
+  const scale = Math.min(1, MAX_SIDE / Math.max(sw, sh));
+  const w = Math.round(sw * scale), h = Math.round(sh * scale);
   const c = document.createElement('canvas');
   c.width = w; c.height = h;
   const ctx = c.getContext('2d');
   ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, w, h);
-  ctx.drawImage(bmp, 0, 0, w, h);
+  ctx.drawImage(bmp, sx, sy, sw, sh, 0, 0, w, h);
   bmp.close();
   const blob = await new Promise((r) => c.toBlob(r, 'image/jpeg', 0.82));
   return { buffer: await blob.arrayBuffer(), w, h };
@@ -252,9 +261,9 @@ async function shrink(file) {
 // ---- 엑셀 레이아웃 (A4 세로, 한 페이지에 사진 2장) ----
 const COLS = [14, 34, 12, 30];                     // 위치 | 값 | 일자 | 값
 const colPx = (w) => Math.trunc(w * 7 + 5);
-const H = { title: 24, num: 20, photo: 290, info: 24 }; // pt
+const H = { heading: 40, title: 24, num: 20, photo: 265, info: 24 }; // pt
 const PT_PX = 4 / 3, EMU_PX = 9525;
-const PHOTO_MAX = { w: 520, h: 360 };              // px, 사진 칸 안에서 비율 유지
+const PHOTO_MAX = { w: 510, h: 330 };              // px, 사진 칸 안 사진 크기
 
 function anchorAt(xPx, row0, yPx) {
   let col = 0;
@@ -287,6 +296,13 @@ async function buildWorkbook() {
 
     if (i % 2 === 0) { // 페이지 머리
       if (i > 0) ws.getRow(r - 1).addPageBreak();
+      const hd = ws.getRow(r);
+      hd.height = H.heading;
+      ws.mergeCells(r, 1, r, 4);
+      hd.getCell(1).value = '사 진 대 지';
+      hd.getCell(1).font = { ...font, size: 20, bold: true, underline: true };
+      hd.getCell(1).alignment = { vertical: 'top', horizontal: 'center' };
+      r++;
       const t = ws.getRow(r);
       t.height = H.title;
       ws.mergeCells(r, 1, r, 4);
@@ -309,7 +325,8 @@ async function buildWorkbook() {
     const photoRow = ws.getRow(r);
     photoRow.height = H.photo;
     for (let c = 1; c <= 4; c++) photoRow.getCell(c).border = { left: c === 1 ? thin : undefined, right: c === 4 ? thin : undefined };
-    const img = await shrink(p.file);
+    const fill = $('fill').checked;
+    const img = await shrink(p.file, fill ? PHOTO_MAX.w / PHOTO_MAX.h : null);
     const s = Math.min(PHOTO_MAX.w / img.w, PHOTO_MAX.h / img.h);
     const w = Math.round(img.w * s), h = Math.round(img.h * s);
     const id = wb.addImage({ buffer: img.buffer, extension: 'jpeg' });
@@ -334,7 +351,7 @@ async function buildWorkbook() {
     const work = ws.getRow(r);
     work.height = H.info;
     ws.mergeCells(r, 2, r, 4);
-    work.getCell(1).value = '작 업 내 용';
+    work.getCell(1).value = '사 진 내 용';
     work.getCell(2).value = p.work || defWork;
     for (let c = 1; c <= 4; c++) { const cell = work.getCell(c); cell.font = font; cell.alignment = center; cell.border = all; }
     r++;
