@@ -86,7 +86,7 @@ label.check input { width: 20px; height: 20px; margin: 2px 0 0; flex: none; acce
         <label>번호 앞부분<input type="text" id="prefix" value="2-"></label>
         <label>시작 번호<input type="number" id="start" value="1" min="1"></label>
       </div>
-      <label class="check"><input type="checkbox" id="fill" checked> 사진을 모두 같은 크기로 맞추기 (칸보다 넘치는 가장자리는 잘림)</label>
+      <label class="check"><input type="checkbox" id="fill"> 사진 비율 유지 (끄면 사진 전체를 칸에 맞게 늘림, 켜면 찌그러지지 않게 가장자리를 잘라냄)</label>
     </div>
     <button class="primary" id="make" disabled>엑셀 만들기</button>
     <div class="status" id="status">사진을 넣어 주세요.</div>
@@ -108,9 +108,9 @@ label.check input { width: 20px; height: 20px; margin: 2px 0 0; flex: none; acce
   </main>
 </div>
 
-<div class="ver" id="ver">v2026.10.26 17:01</div>
-<script src="jszip.min.js?v=2026.10.26_17:01"></script>
-<script src="template.js?v=2026.10.26_17:01"></script>
+<div class="ver" id="ver">v2026.10.26 17:06</div>
+<script src="jszip.min.js?v=2026.10.26_17:06"></script>
+<script src="template.js?v=2026.10.26_17:06"></script>
 <script>
 'use strict';
 const $ = (id) => document.getElementById(id);
@@ -267,14 +267,14 @@ async function shrink(file, ratio) {
 // ---- 엑셀 만들기: 매형분 양식(TEMPLATE) 1~30행(A4 한 장, 사진 2장)을 페이지마다 복제 ----
 // 양식 구조: 1~2행 '사진대지', 4행 공사명, 5~17행 첫 사진, 18~30행 두 번째 사진
 const PAGE_ROWS = 30, FIRST = 5;
-// 열 너비(px, 기본글꼴 맑은 고딕 11 기준): A | B~F | G | H
+// 열 너비(px, 기본글꼴 맑은 고딕 11 기준): A | B~F | G | H — 사진 비율 유지(잘라내기) 계산에만 사용
 const COL_PX = [111, 90, 90, 90, 90, 90, 46, 111];
 const ROW_PX = 35;                                  // 26.25pt
 const EMU_PX = 9525;
-// 사진 칸: B~G열, 블록 첫 행 절반부터 11번째 행 직전까지 (양식의 사진 위치)
-const BOX = { col0: 1, col1: 7, row0: 0.5, row1: 10 };
+// 사진 칸: 첫 사진 B5:G14, 두 번째 사진 B18:G27 (블록 첫 행부터 10행). 사진을 이 칸에 꽉 채운다
+const BOX = { col0: 1, col1: 7, rows: 10 };
 const BOX_W = COL_PX.slice(BOX.col0, BOX.col1).reduce((a, b) => a + b, 0);
-const BOX_H = (BOX.row1 - BOX.row0) * ROW_PX;
+const BOX_H = BOX.rows * ROW_PX;
 
 const esc = (t) => String(t).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 const strCell = (ref, s, text) => `<c r="${ref}" s="${s}" t="inlineStr"><is><t>${esc(text)}</t></is></c>`;
@@ -284,24 +284,14 @@ function dateCell(ref, iso) {
   return `<c r="${ref}" s="21"><v>${serial}</v></c>`;
 }
 
-// 사진 칸 안의 px 좌표 → 엑셀 셀 기준 위치
-function anchor(xPx, rowBase, yPx) {
-  let col = 0;
-  while (col < COL_PX.length - 1 && xPx >= COL_PX[col]) { xPx -= COL_PX[col]; col++; }
-  const rowOff = Math.floor(yPx / ROW_PX);
-  return `<xdr:col>${col}</xdr:col><xdr:colOff>${Math.round(xPx * EMU_PX)}</xdr:colOff>` +
-    `<xdr:row>${rowBase + rowOff}</xdr:row><xdr:rowOff>${Math.round((yPx - rowOff * ROW_PX) * EMU_PX)}</xdr:rowOff>`;
-}
-function picXml(n, rowBase, img) {
-  const s = Math.min(BOX_W / img.w, BOX_H / img.h);
-  const w = img.w * s, h = img.h * s;
-  const x0 = COL_PX.slice(0, BOX.col0).reduce((a, b) => a + b, 0) + (BOX_W - w) / 2;
-  const y0 = BOX.row0 * ROW_PX + (BOX_H - h) / 2;
-  return `<xdr:twoCellAnchor editAs="oneCell"><xdr:from>${anchor(x0, rowBase, y0)}</xdr:from>` +
-    `<xdr:to>${anchor(x0 + w, rowBase, y0 + h)}</xdr:to>` +
-    `<xdr:pic><xdr:nvPicPr><xdr:cNvPr id="${n + 1}" name="사진 ${n}"/><xdr:cNvPicPr><a:picLocks noChangeAspect="1"/></xdr:cNvPicPr></xdr:nvPicPr>` +
+// 사진의 왼쪽 위를 B열·블록 첫 행 모서리에, 오른쪽 아래를 H열·11번째 행 모서리에 고정
+const cellAt = (col, row) => `<xdr:col>${col}</xdr:col><xdr:colOff>0</xdr:colOff><xdr:row>${row}</xdr:row><xdr:rowOff>0</xdr:rowOff>`;
+function picXml(n, rowBase) {
+  return `<xdr:twoCellAnchor editAs="oneCell"><xdr:from>${cellAt(BOX.col0, rowBase)}</xdr:from>` +
+    `<xdr:to>${cellAt(BOX.col1, rowBase + BOX.rows)}</xdr:to>` +
+    `<xdr:pic><xdr:nvPicPr><xdr:cNvPr id="${n + 1}" name="사진 ${n}"/><xdr:cNvPicPr/></xdr:nvPicPr>` +
     `<xdr:blipFill><a:blip r:embed="rId${n}"/><a:stretch><a:fillRect/></a:stretch></xdr:blipFill>` +
-    `<xdr:spPr><a:xfrm><a:off x="0" y="0"/><a:ext cx="${Math.round(w * EMU_PX)}" cy="${Math.round(h * EMU_PX)}"/></a:xfrm>` +
+    `<xdr:spPr><a:xfrm><a:off x="0" y="0"/><a:ext cx="${BOX_W * EMU_PX}" cy="${BOX_H * EMU_PX}"/></a:xfrm>` +
     `<a:prstGeom prst="rect"><a:avLst/></a:prstGeom></xdr:spPr></xdr:pic><xdr:clientData/></xdr:twoCellAnchor>`;
 }
 
@@ -341,7 +331,7 @@ async function buildWorkbook() {
       fillCell(kW, strCell(at('B', 17), 24, p.work || defWork));
       const img = await shrink(p.file, fill ? BOX_W / BOX_H : null);
       zip.file(`xl/media/image${i + 1}.jpeg`, img.buffer);
-      pics += picXml(i + 1, FIRST - 1 + off + base, img);
+      pics += picXml(i + 1, FIRST - 1 + off + base);
       drawRels += `<Relationship Id="rId${i + 1}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" Target="../media/image${i + 1}.jpeg"/>`;
     }
     body += xml;
