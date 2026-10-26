@@ -313,9 +313,13 @@ async function buildWorkbook() {
     const s = Math.min(PHOTO_MAX.w / img.w, PHOTO_MAX.h / img.h);
     const w = Math.round(img.w * s), h = Math.round(img.h * s);
     const id = wb.addImage({ buffer: img.buffer, extension: 'jpeg' });
+    // 왼쪽 위·오른쪽 아래 모서리를 모두 사진 칸에 고정한다. 크기(px)로만 지정하면
+    // 엑셀 앱·뷰어마다 칸 크기 계산이 달라 사진이 아래 위치/일자 줄을 덮는 경우가 있다.
+    const x0 = (totalW - w) / 2, y0 = (H.photo * PT_PX - h) / 2;
     ws.addImage(id, {
-      tl: anchorAt((totalW - w) / 2, r - 1, (H.photo * PT_PX - h) / 2),
-      ext: { width: w, height: h }, editAs: 'oneCell',
+      tl: anchorAt(x0, r - 1, y0),
+      br: anchorAt(x0 + w, r - 1, y0 + h),
+      editAs: 'twoCell',
     });
     r++;
 
