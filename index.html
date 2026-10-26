@@ -104,7 +104,8 @@ label.check input { width: 20px; height: 20px; margin: 2px 0 0; flex: none; acce
   </main>
 </div>
 
-<script src="exceljs.min.js"></script>
+<script src="jszip.min.js"></script>
+<script src="template.js"></script>
 <script>
 'use strict';
 const $ = (id) => document.getElementById(id);
@@ -258,114 +259,117 @@ async function shrink(file, ratio) {
   return { buffer: await blob.arrayBuffer(), w, h };
 }
 
-// ---- 엑셀 레이아웃 (A4 세로, 한 페이지에 사진 2장) ----
-const COLS = [14, 34, 12, 30];                     // 위치 | 값 | 일자 | 값
-const colPx = (w) => Math.trunc(w * 7 + 5);
-const H = { heading: 40, title: 24, num: 20, photo: 265, info: 24 }; // pt
-const PT_PX = 4 / 3, EMU_PX = 9525;
-const PHOTO_MAX = { w: 510, h: 330 };              // px, 사진 칸 안 사진 크기
+// ---- 엑셀 만들기: 매형분 양식(TEMPLATE)의 2~30행 한 페이지를 사진 2장마다 복제 ----
+// 양식 구조: 1~4행 제목·공사명(인쇄 시 매 페이지 반복), 한 페이지 = 26행(사진 2장)
+const PAGE_ROWS = 26, FIRST = 5;
+// 열 너비(px, 기본글꼴 맑은 고딕 11 기준): A | B~F | G | H
+const COL_PX = [111, 90, 90, 90, 90, 90, 46, 111];
+const ROW_PX = 35;                                  // 26.25pt
+const EMU_PX = 9525;
+// 사진 칸: B~G열, 블록 첫 행 절반부터 11번째 행 직전까지 (양식의 사진 위치)
+const BOX = { col0: 1, col1: 7, row0: 0.5, row1: 10 };
+const BOX_W = COL_PX.slice(BOX.col0, BOX.col1).reduce((a, b) => a + b, 0);
+const BOX_H = (BOX.row1 - BOX.row0) * ROW_PX;
 
-function anchorAt(xPx, row0, yPx) {
+const esc = (t) => String(t).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+const strCell = (ref, s, text) => `<c r="${ref}" s="${s}" t="inlineStr"><is><t>${esc(text)}</t></is></c>`;
+function dateCell(ref, iso) {
+  const [y, m, d] = iso.split('-').map(Number);
+  const serial = Math.round((Date.UTC(y, m - 1, d) - Date.UTC(1899, 11, 30)) / 86400000);
+  return `<c r="${ref}" s="21"><v>${serial}</v></c>`;
+}
+
+// 사진 칸 안의 px 좌표 → 엑셀 셀 기준 위치
+function anchor(xPx, rowBase, yPx) {
   let col = 0;
-  while (col < COLS.length - 1 && xPx >= colPx(COLS[col])) { xPx -= colPx(COLS[col]); col++; }
-  return { nativeCol: col, nativeColOff: Math.round(xPx * EMU_PX), nativeRow: row0, nativeRowOff: Math.round(yPx * EMU_PX) };
+  while (col < COL_PX.length - 1 && xPx >= COL_PX[col]) { xPx -= COL_PX[col]; col++; }
+  const rowOff = Math.floor(yPx / ROW_PX);
+  return `<xdr:col>${col}</xdr:col><xdr:colOff>${Math.round(xPx * EMU_PX)}</xdr:colOff>` +
+    `<xdr:row>${rowBase + rowOff}</xdr:row><xdr:rowOff>${Math.round((yPx - rowOff * ROW_PX) * EMU_PX)}</xdr:rowOff>`;
+}
+function picXml(n, rowBase, img) {
+  const s = Math.min(BOX_W / img.w, BOX_H / img.h);
+  const w = img.w * s, h = img.h * s;
+  const x0 = COL_PX.slice(0, BOX.col0).reduce((a, b) => a + b, 0) + (BOX_W - w) / 2;
+  const y0 = BOX.row0 * ROW_PX + (BOX_H - h) / 2;
+  return `<xdr:twoCellAnchor editAs="oneCell"><xdr:from>${anchor(x0, rowBase, y0)}</xdr:from>` +
+    `<xdr:to>${anchor(x0 + w, rowBase, y0 + h)}</xdr:to>` +
+    `<xdr:pic><xdr:nvPicPr><xdr:cNvPr id="${n + 1}" name="사진 ${n}"/><xdr:cNvPicPr><a:picLocks noChangeAspect="1"/></xdr:cNvPicPr></xdr:nvPicPr>` +
+    `<xdr:blipFill><a:blip r:embed="rId${n}"/><a:stretch><a:fillRect/></a:stretch></xdr:blipFill>` +
+    `<xdr:spPr><a:xfrm><a:off x="0" y="0"/><a:ext cx="${Math.round(w * EMU_PX)}" cy="${Math.round(h * EMU_PX)}"/></a:xfrm>` +
+    `<a:prstGeom prst="rect"><a:avLst/></a:prstGeom></xdr:spPr></xdr:pic><xdr:clientData/></xdr:twoCellAnchor>`;
 }
 
 async function buildWorkbook() {
-  const wb = new ExcelJS.Workbook();
-  const ws = wb.addWorksheet('사진대지', {
-    pageSetup: { paperSize: 9, orientation: 'portrait', fitToPage: true, fitToWidth: 1, fitToHeight: 0,
-      horizontalCentered: true,
-      margins: { left: 0.5, right: 0.5, top: 0.5, bottom: 0.4, header: 0.2, footer: 0.2 } },
-    views: [{ showGridLines: false }],
-  });
-  ws.columns = COLS.map((width) => ({ width }));
-
-  const font = { name: '맑은 고딕', size: 10 };
-  const thin = { style: 'thin', color: { argb: 'FF000000' } };
-  const all = { top: thin, left: thin, bottom: thin, right: thin };
-  const center = { vertical: 'middle', horizontal: 'center' };
-  const totalW = COLS.reduce((s, w) => s + colPx(w), 0);
+  const T = TEMPLATE;
+  const zip = new JSZip();
   const project = $('project').value.trim();
   const defLoc = $('location').value.trim(), defWork = $('work').value.trim();
+  const fill = $('fill').checked;
+  const pages = Math.ceil(photos.length / 2);
+  const last = FIRST - 1 + pages * PAGE_ROWS;
 
-  let r = 1;
-  for (let i = 0; i < photos.length; i++) {
-    const p = photos[i];
-    setStatus(`사진 처리 중… ${i + 1} / ${photos.length}`);
-
-    if (i % 2 === 0) { // 페이지 머리
-      if (i > 0) ws.getRow(r - 1).addPageBreak();
-      const hd = ws.getRow(r);
-      hd.height = H.heading;
-      ws.mergeCells(r, 1, r, 4);
-      hd.getCell(1).value = '사 진 대 지';
-      hd.getCell(1).font = { ...font, size: 20, bold: true, underline: true };
-      hd.getCell(1).alignment = { vertical: 'top', horizontal: 'center' };
-      r++;
-      const t = ws.getRow(r);
-      t.height = H.title;
-      ws.mergeCells(r, 1, r, 4);
-      t.getCell(1).value = `◆ 공사명 : ${project}`;
-      t.getCell(1).font = { ...font, size: 11, bold: true };
-      t.getCell(1).alignment = { vertical: 'bottom' };
-      r++;
+  const rowsTop = T.rowsTop.replace('%%A4%%', strCell('A4', 5, `◆ 공사명 : ${project}`));
+  let body = '', pics = '', drawRels = '';
+  const merges = ['A1:H2', 'A4:H4'];
+  for (let pg = 0; pg < pages; pg++) {
+    const off = pg * PAGE_ROWS;
+    const shift = (n) => Number(n) + off;
+    let xml = T.block
+      .replace(/<row r="(\d+)"/g, (_, n) => `<row r="${shift(n)}"`)
+      .replace(/ r="([A-H])(\d+)"/g, (_, c, n) => ` r="${c}${shift(n)}"`);
+    for (const slot of [0, 1]) {
+      const i = pg * 2 + slot, p = photos[i];
+      const base = slot * 13; // 두 번째 사진 블록은 13행 아래
+      const at = (col, row) => `${col}${row + base + off}`;
+      const fillCell = (key, cell) => { xml = xml.replace(`%%${key}%%`, cell); };
+      const [kN, kL, kD, kW] = slot === 0 ? ['H5', 'B16', 'F16', 'B17'] : ['H18', 'B29', 'F29', 'B30'];
+      if (!p) { // 홀수 장이면 마지막 칸은 빈 양식
+        fillCell(kN, `<c r="${at('H', 5)}" s="9"/>`); fillCell(kL, `<c r="${at('B', 16)}" s="18"/>`);
+        fillCell(kD, `<c r="${at('F', 16)}" s="21"/>`); fillCell(kW, `<c r="${at('B', 17)}" s="24"/>`);
+        continue;
+      }
+      setStatus(`사진 처리 중… ${i + 1} / ${photos.length}`);
+      fillCell(kN, strCell(at('H', 5), 9, numberOf(i)));
+      fillCell(kL, strCell(at('B', 16), 18, p.location || defLoc));
+      fillCell(kD, dateCell(at('F', 16), p.date));
+      fillCell(kW, strCell(at('B', 17), 24, p.work || defWork));
+      const img = await shrink(p.file, fill ? BOX_W / BOX_H : null);
+      zip.file(`xl/media/image${i + 1}.jpeg`, img.buffer);
+      pics += picXml(i + 1, FIRST - 1 + off + base, img);
+      drawRels += `<Relationship Id="rId${i + 1}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" Target="../media/image${i + 1}.jpeg"/>`;
     }
-
-    // 번호 줄
-    const numRow = ws.getRow(r);
-    numRow.height = H.num;
-    numRow.getCell(4).value = numberOf(i);
-    numRow.getCell(4).font = font;
-    numRow.getCell(4).alignment = { vertical: 'middle', horizontal: 'right', indent: 2 };
-    for (let c = 1; c <= 4; c++) numRow.getCell(c).border = { top: thin, left: c === 1 ? thin : undefined, right: c === 4 ? thin : undefined };
-    r++;
-
-    // 사진 칸
-    const photoRow = ws.getRow(r);
-    photoRow.height = H.photo;
-    for (let c = 1; c <= 4; c++) photoRow.getCell(c).border = { left: c === 1 ? thin : undefined, right: c === 4 ? thin : undefined };
-    const fill = $('fill').checked;
-    const img = await shrink(p.file, fill ? PHOTO_MAX.w / PHOTO_MAX.h : null);
-    const s = Math.min(PHOTO_MAX.w / img.w, PHOTO_MAX.h / img.h);
-    const w = Math.round(img.w * s), h = Math.round(img.h * s);
-    const id = wb.addImage({ buffer: img.buffer, extension: 'jpeg' });
-    // 왼쪽 위·오른쪽 아래 모서리를 모두 사진 칸에 고정한다. 크기(px)로만 지정하면
-    // 엑셀 앱·뷰어마다 칸 크기 계산이 달라 사진이 아래 위치/일자 줄을 덮는 경우가 있다.
-    const x0 = (totalW - w) / 2, y0 = (H.photo * PT_PX - h) / 2;
-    ws.addImage(id, {
-      tl: anchorAt(x0, r - 1, y0),
-      br: anchorAt(x0 + w, r - 1, y0 + h),
-      editAs: 'twoCell',
-    });
-    r++;
-
-    // 위치 / 일자
-    const info = ws.getRow(r);
-    info.height = H.info;
-    info.values = ['위    치', p.location || defLoc, '일    자', p.date];
-    info.eachCell((cell) => { cell.font = font; cell.alignment = center; cell.border = all; });
-    r++;
-
-    // 작업내용
-    const work = ws.getRow(r);
-    work.height = H.info;
-    ws.mergeCells(r, 2, r, 4);
-    work.getCell(1).value = '사 진 내 용';
-    work.getCell(2).value = p.work || defWork;
-    for (let c = 1; c <= 4; c++) { const cell = work.getCell(c); cell.font = font; cell.alignment = center; cell.border = all; }
-    r++;
+    body += xml;
+    for (const m of ['B6:G14', 'B16:D16', 'F16:H16', 'B17:H17', 'B19:G27', 'B29:D29', 'F29:H29', 'B30:H30'])
+      merges.push(m.replace(/\d+/g, (n) => shift(n)));
   }
-  return wb;
+  const breaks = pages > 1
+    ? `<rowBreaks count="${pages - 1}" manualBreakCount="${pages - 1}">` +
+      Array.from({ length: pages - 1 }, (_, k) => `<brk id="${FIRST - 1 + (k + 1) * PAGE_ROWS}" max="16383" man="1"/>`).join('') + '</rowBreaks>'
+    : '';
+  const sheet = T.sheetHead.replace('%%LAST%%', last) + rowsTop + body +
+    T.sheetTail.replace('%%MERGES%%', `<mergeCells count="${merges.length}">${merges.map((m) => `<mergeCell ref="${m}"/>`).join('')}</mergeCells>`)
+      .replace('%%BREAKS%%', breaks);
+
+  zip.file('[Content_Types].xml', T.contentTypes);
+  zip.file('_rels/.rels', T.rels);
+  zip.file('xl/workbook.xml', T.workbook.replace('%%LAST%%', last));
+  zip.file('xl/_rels/workbook.xml.rels', T.workbookRels);
+  zip.file('xl/styles.xml', T.styles);
+  zip.file('xl/theme/theme1.xml', T.theme);
+  zip.file('xl/sharedStrings.xml', T.sharedStrings);
+  zip.file('xl/worksheets/sheet1.xml', sheet);
+  zip.file('xl/worksheets/_rels/sheet1.xml.rels', '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/drawing" Target="../drawings/drawing1.xml"/></Relationships>');
+  zip.file('xl/drawings/drawing1.xml', '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n<xdr:wsDr xmlns:xdr="http://schemas.openxmlformats.org/drawingml/2006/spreadsheetDrawing" xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">' + pics + '</xdr:wsDr>');
+  zip.file('xl/drawings/_rels/drawing1.xml.rels', '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">' + drawRels + '</Relationships>');
+  setStatus('엑셀 저장 중…');
+  return zip.generateAsync({ type: 'blob', compression: 'DEFLATE', mimeType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
 }
 
 async function make() {
   $('make').disabled = true;
   try {
-    const wb = await buildWorkbook();
-    setStatus('엑셀 저장 중…');
-    const buf = await wb.xlsx.writeBuffer();
-    const blob = new Blob([buf], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
+    const blob = await buildWorkbook();
     const filename = `사진대지_${numberOf(0)}~${numberOf(photos.length - 1)}.xlsx`;
     const size = `${(blob.size / 1048576).toFixed(1)}MB`;
     const downloads = window.claude?.use ? await window.claude.use('downloads') : null;
