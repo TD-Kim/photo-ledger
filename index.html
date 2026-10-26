@@ -65,6 +65,10 @@ button:disabled { opacity: .5; cursor: default; }
   .ops { grid-column: 1 / -1; justify-content: flex-end; }
 }
 .touch .desk-only { display: none; }
+/* 배포 버전 표시: 새로고침 후 최신인지 확인용 */
+.ver { position: fixed; z-index: 5; pointer-events: none; font-size: 11px; color: var(--muted); opacity: .55;
+  right: max(10px, env(safe-area-inset-right, 0px)); bottom: max(8px, env(safe-area-inset-bottom, 0px));
+  font-variant-numeric: tabular-nums; }
 label.check { display: flex; gap: 8px; align-items: flex-start; color: var(--fg); }
 label.check input { width: 20px; height: 20px; margin: 2px 0 0; flex: none; accent-color: var(--accent); }
 </style>
@@ -104,8 +108,9 @@ label.check input { width: 20px; height: 20px; margin: 2px 0 0; flex: none; acce
   </main>
 </div>
 
-<script src="jszip.min.js"></script>
-<script src="template.js"></script>
+<div class="ver" id="ver">v2026.10.26 17:01</div>
+<script src="jszip.min.js?v=2026.10.26_17:01"></script>
+<script src="template.js?v=2026.10.26_17:01"></script>
 <script>
 'use strict';
 const $ = (id) => document.getElementById(id);
